@@ -11,48 +11,62 @@
 #include <errno.h>      /* used for signal  error handling */
 #include <signal.h>     /* used for signal handling */
 #include <sys/time.h>   /* used for keeping track of real-life seconds */
+#include <sys/msg.h>    /* message queues */
 
 #include "oss.h"        /* imports header file "oss.cpp" */
 
+/* global variables for share mem and msg queues */
+int msgq;
+int shmid;
+SharedTime* sharedMem;
+
 struct PCB {
-    int occupied;
-    pid_t pid;
-    int startSeconds;
-    int startNano;
+    int occupied;         // either "0" or "1"
+    pid_t pid;            // process id of this child
+    int startSeconds;     // time when it was forked (sec)
+    int startNano;        // time when it was forked (nano)
+    int blocked;                // whether process is blocked
+    int eventBlockedUntilSec;   // when will this process become unblocked (sec)
+    int eventBlockedUntilNano;  // when will this process become unlbocked (nano)
 };
 
 struct PCB processtable[20];  // PCD is 20 entries long
 
 // used signal-handling code per Hauschild's example
 static void myhandler(int s) {
-		printf("\nReceived signal %d. Process terminated.\n", s);
+	printf("\nReceived signal %d. Process terminated.\n", s);
 
-        // kills all the children stored in the process table
-        for (int i = 0; i < 20; ++i)
-        {
-            if (processtable[i].pid > 0)
-                kill(processtable[i].pid, SIGTERM);
-        }
-		exit(1);
+    // kills all the children stored in the process table
+    for (int i = 0; i < 20; ++i)
+    {
+        if (processtable[i].pid > 0)
+            kill(processtable[i].pid, SIGTERM);
+    }
+	exit(1);
+
+    // clear all three message queues
+    if (msgctl(msgq, IPC_RMID, NULL) == -1) {
+        perror("Failed to clear message queue ('msgq')");
+    }
+
+    // cleans shared memory in case of early termination
+    shmdt(sharedMem);
 }
 
 static int setupinterrupt(void) {
-		struct sigaction act;
-		act.sa_handler = myhandler;
-		act.sa_flags = 0;
-		return (sigemptyset(&act.sa_mask) || sigaction(SIGINT, &act, NULL) || sigaction(SIGPROF, &act, NULL));
+	struct sigaction act;
+	act.sa_handler = myhandler;
+	act.sa_flags = 0;
+	return (sigemptyset(&act.sa_mask) || sigaction(SIGINT, &act, NULL) || sigaction(SIGPROF, &act, NULL));
 }
 
 static int setupitimer(void) {
-		struct itimerval value;
-		value.it_interval.tv_sec = 60;  // terminate after 60 seconds
-		value.it_interval.tv_usec = 0;
-		value.it_value = value.it_interval;
-		return (setitimer(ITIMER_PROF, &value, NULL));
+	struct itimerval value;
+	value.it_interval.tv_sec = 60;  // terminate after 60 seconds
+	value.it_interval.tv_usec = 0;
+	value.it_value = value.it_interval;
+	return (setitimer(ITIMER_PROF, &value, NULL));
 }
-
-/* just used to initialize process table structure*/
-void displayProcessTable(int seconds, int nanoseconds);
 
 /* used to display the process table (initialized with only 0's) */
 void displayProcessTable(int seconds, int nanoseconds)
@@ -94,7 +108,7 @@ int main(int argc, char** argv)
 
     int opt;
     key_t key = 859047;                                            // child and parent agree on key
-    int shmid = shmget(key, sizeof(SharedTime), IPC_CREAT | 0666); // creates shared memory
+    shmid = shmget(key, sizeof(SharedTime), IPC_CREAT | 0666); // creates shared memory
     
     if (shmid == -1) {  // outputs if there was an error connecting to shared memory
         perror("Error in parent: shmget");
@@ -108,108 +122,105 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // initializes clock using shared time
-    SharedTime init_Time{0, 0};
-
     /* sets default options if user doesn't set one */
-    int nValue = 5;     // # of users
+    int nValue = 2;     // # of users
     int sValue = 2;     // # of allowed users at a given time
-    int tValue = 2;     // calls a rand time (sec and nano) between 1 and given #
-    int iValue = 100;   // sets interval to launch children between
+    int tValue = 1;     // calls a rand time (sec and nano) between 1 and given #
+    int iValue = 0;   // sets interval to launch children between
     srand(time(0));     // uses a seed for random numbers
 
-    int previousSeconds = -1;
-    int previousNanoseconds = -1;
-    int randSec, randNano;  // empty ints to generate random numbers inside
+    /* used for printing every half a second */
+    bool flag = false;
+    int previousSecond = 0;
 
-    while (nValue > 0)
+    /* initialize shared time */
+    SharedTime sharedTime{0, 0};
+
+    /* highest priority (10 ms)
+       medium priority  (20 ms)
+       lowest priority  (40 ms) */
+    msgq = msgget(msq_key, IPC_CREAT | PERMS);  // highest priority (10 ms)
+
+    while (true)
     {
-        incrementClock(init_Time);
-
-        int remainingUsers = std::min(nValue, sValue);  // determine number of remaining users
-
-        for (int i = 0; i < remainingUsers; ++i)
+        /* prints every half second */
+        if (sharedTime.seconds >= previousSecond)
         {
-            pid_t childPid = fork();
+            std::cout << "Time: " << sharedTime.seconds << " seconds, " << sharedTime.nanoseconds << " nanoseconds" << std::endl;
+            previousSecond++;  // updates the seconds
+            flag = true;
+        }
+        else if(sharedTime.nanoseconds >= 500000000  && flag)
+        {
+            std::cout << "Time: " << sharedTime.seconds << " seconds, " << sharedTime.nanoseconds << " nanoseconds" << std::endl;
+            flag = false;
+        }
 
-            init_Time.nanoseconds += iValue;
+        incrementClock(sharedTime);                  // increments shared Time
+
+        for (int i = 0; i <= sValue; ++i)             // 'sValue' used to set max allowed processes at a time
+        {
+            sharedTime.nanoseconds += iValue;        // processes enter system at intervals of 'i' nanoseconds
+            pid_t childPid = fork();
 
             if (childPid == -1)
             {
-                perror("Error: could not find user process");
+                perror("Error: could not locate 'worker' process");
                 exit(EXIT_FAILURE);
             }
             else if (childPid == 0)
             {
-                randSec = rand() % (tValue + 1);
-                randNano = rand() % 1000000000;
+                message msg;
+                msg.priority = 1;
+                msg.value = (i * 5);
+                msgsnd(msgq, &msg, sizeof(int), 0);
+                std::cout << "Sent message with value " << msg.priority << " from Process " << getpid() << std::endl;
 
-                std::string randomSecStr = std::to_string(randSec);               // how long to run (secs)
-                std::string randomNanoStr = std::to_string(randNano);             // how long to run (nano)
-                std::string parentSec = std::to_string(init_Time.seconds);        // time provided from parent (sec)
-                std::string parentNano = std::to_string(init_Time.nanoseconds);   // time provided form parent (nano)
-                
-                execl("./worker", "worker", randomSecStr.c_str(), randomNanoStr.c_str(), parentSec.c_str(), parentNano.c_str(), nullptr);
+                execlp("./worker", "worker", nullptr);
                 exit(1);
-
             }
             else if (childPid > 0)
             {
-                int emptyIndex = -1;
-                for (int j = 0; j < sValue; ++j) // sets max allowed values in process table
-                {
-                    if (processtable[j].occupied == 0)
-                    {
-                        emptyIndex = j;  // allocated empty indexes
-                        break;
-                    }
-                }
-                if (emptyIndex != -1)
-                {
-                    processtable[emptyIndex].occupied = 1;
-                    processtable[emptyIndex].pid = childPid;
-                    processtable[emptyIndex].startSeconds = sharedMem->seconds;
-                    processtable[emptyIndex].startNano = sharedMem->nanoseconds;
-                }
-                else
-                {
-                    std::cerr << "Error: Process table is full\n";
-                    return 1;
-                }
+
             }
             else
             {
-                std::cerr << "Error: Fork failed\n";
+                std::cerr << "Error: Worker fork failed\n";
                 return 1;
             }
         }
         
         int finishedProcess = 0;
 
-        while (finishedProcess < remainingUsers) {
+        while (finishedProcess < sValue) {
             int status;
             int pid = waitpid(-1, &status, WNOHANG);  // non-blocking wait call
-
             if (pid == -1)
             {
-                std::cerr << "Error: waitpid failure\n";  // error-handling
+                std::cerr << "Error: waitpid failure (closing)\n";  // error-handling for ending processes
                 return 1;
             }
-            else if (pid > 0) {
-                // frees up space in PCB once child process is finished
-                for (int j = 0; j < sValue; ++j)
-                {
-                    if (processtable[j].pid == pid)
-                    {
-                        processtable[j].occupied = 0;
-                        break;
-                    }
-                }
+            else if (pid > 0)
+            {
+                message msg;
+                msgrcv(msgq, &msg, sizeof(message) - sizeof(long), 1, 0); // Receive only messages of type 1
+                std::cout << "Received message with value " << msg.value << " in Process " << getpid() << std::endl;
+                wait(0);            // provide child time to clear out of the system
+
                 ++finishedProcess;
+                nValue--;           // subtract from total user number
             }
         }
 
-        nValue -= remainingUsers;  // subtracts # of workers in batch from total workers
+        if (nValue == 0) {
+            break;
+        }
+    }
+
+
+    // clear all three message queues
+    if (msgctl(msgq, IPC_RMID, NULL) == -1) {
+        perror("Failed to clear the message queue");
     }
 
     // cleans shared memory
