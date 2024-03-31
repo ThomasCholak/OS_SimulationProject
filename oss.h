@@ -27,7 +27,7 @@ const int msq_key = ftok("oss.h", 0);
 // structure for messages which are sent
 struct message {
     long priority;   // can be q0, q1, or q2
-    char value;      // actual message
+    int value;      // actual message
 };
 
 // creates shared time structure for 'oss.cpp' and 'worker.cpp' 

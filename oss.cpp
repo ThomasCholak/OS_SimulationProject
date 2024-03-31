@@ -139,7 +139,10 @@ int main(int argc, char** argv)
     /* highest priority (10 ms)
        medium priority  (20 ms)
        lowest priority  (40 ms) */
-    msgq = msgget(msq_key, IPC_CREAT | PERMS);  // highest priority (10 ms)
+
+    int q0 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
+    int q1 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
+    int q2 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
 
     while (true)
     {
@@ -158,7 +161,7 @@ int main(int argc, char** argv)
 
         incrementClock(sharedTime);                  // increments shared Time
 
-        for (int i = 0; i <= sValue; ++i)             // 'sValue' used to set max allowed processes at a time
+        for (int i = 0; i <= sValue; ++i)            // 'sValue' used to set max allowed processes at a time
         {
             sharedTime.nanoseconds += iValue;        // processes enter system at intervals of 'i' nanoseconds
             pid_t childPid = fork();
@@ -170,11 +173,28 @@ int main(int argc, char** argv)
             }
             else if (childPid == 0)
             {
-                message msg;
-                msg.priority = 1;
-                msg.value = (i * 5);
-                msgsnd(msgq, &msg, sizeof(int), 0);
-                std::cout << "Sent message with value " << msg.priority << " from Process " << getpid() << std::endl;
+                for (int j = 0; j < 5; ++j) {
+                    message msg;
+                    msg.value = i * 5 + j;
+                    if (i == 0)
+                    {
+                        msg.priority = 0;  // high priority
+                        msgsnd(q0, &msg, sizeof(message) - sizeof(long), 0);
+                        std::cout << "Sent message with value1 " << msg.value << " from Process " << getpid() << std::endl;
+                    }
+                    else if (i == 1)
+                    {
+                        msg.priority = 1;  // medium priority
+                        msgsnd(q1, &msg, sizeof(message) - sizeof(long), 0);
+                        std::cout << "Sent message with value2 " << msg.value << " from Process " << getpid() << std::endl;
+                    }
+                    else
+                    {
+                        msg.priority = 2;  // low priority
+                        msgsnd(q2, &msg, sizeof(message) - sizeof(long), 0);
+                        std::cout << "Sent message with value3 " << msg.value << " from Process " << getpid() << std::endl;
+                    }
+                }
 
                 execlp("./worker", "worker", nullptr);
                 exit(1);
@@ -219,8 +239,14 @@ int main(int argc, char** argv)
 
 
     // clear all three message queues
-    if (msgctl(msgq, IPC_RMID, NULL) == -1) {
-        perror("Failed to clear the message queue");
+    if (msgctl(q0, IPC_RMID, NULL) == -1) {
+        perror("Failed to clear the low-priority message queue");
+    }
+    if (msgctl(q1, IPC_RMID, NULL) == -1) {
+        perror("Failed to clear the medium-priority message queue");
+    }
+    if (msgctl(q2, IPC_RMID, NULL) == -1) {
+        perror("Failed to clear the low-priority message queue");
     }
 
     // cleans shared memory
