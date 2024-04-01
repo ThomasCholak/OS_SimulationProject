@@ -7,7 +7,6 @@
 #include <iomanip>      /* just used for PCB formatting */
 #include <fcntl.h>      /* needed to import: O_CREAT */
 #include <cstdlib>      /* needed to generate random numbers */
-#include <ctime>        /* used for seeding the time */
 #include <errno.h>      /* used for signal  error handling */
 #include <signal.h>     /* used for signal handling */
 #include <sys/time.h>   /* used for keeping track of real-life seconds */
@@ -20,6 +19,8 @@ int msgq;
 int shmid;
 SharedTime* sharedMem;
 
+int processNum = 0;
+
 struct PCB {
     int occupied;         // either "0" or "1"
     pid_t pid;            // process id of this child
@@ -31,6 +32,48 @@ struct PCB {
 };
 
 struct PCB processtable[20];  // PCD is 20 entries long
+
+void generateProcesses(queue<Process>& processes, int num_processes, int max_burst_time, int increment)
+{
+    srand(time(nullptr)); // seed for random number generation
+
+    key_t key = 859047;  // child uses same key as parent
+    int shmid = shmget(key, sizeof(SharedTime), IPC_CREAT | 0666);
+
+    if (shmid == -1) {
+        perror("Error in child: shmget");
+    }
+
+    SharedTime* sharedMem = (SharedTime*)shmat(shmid, nullptr, 0);
+    if (sharedMem == (SharedTime*)-1) {
+        perror("Error in child: shmat");
+    }
+
+    for (int i = 1; i <= num_processes; ++i)
+    {
+        processNum++;
+
+        // generates a random burst time (between 1 and max_burst_time)
+        int burst_time = rand() % (max_burst_time*10000) + 1;
+        
+        // initializes a new process
+        Process new_process;
+
+        new_process.id = processNum;
+        new_process.burst_time = burst_time;
+        new_process.remaining_time = burst_time;
+
+        sharedMem->nanoseconds+=100;
+
+        cout << "OSS: Generating process with PID " << new_process.id << " and putting it in queue " << "0" << " at time "
+            << sharedMem->seconds << ":" << sharedMem->nanoseconds << "\n";
+
+        // adds the process to the queue
+        processes.push(new_process);
+    }
+
+    shmdt(sharedMem);
+}
 
 // used signal-handling code per Hauschild's example
 static void myhandler(int s) {
@@ -89,6 +132,7 @@ void displayProcessTable(int seconds, int nanoseconds)
     std::cout << "-----------------------------------------\n";
 }
 
+
 int main(int argc, char** argv)
 {
     if (signal(SIGTERM, myhandler) == SIG_ERR) {  // sets up sighandler
@@ -123,26 +167,34 @@ int main(int argc, char** argv)
     }
 
     /* sets default options if user doesn't set one */
-    int nValue = 2;     // # of users
-    int sValue = 2;     // # of allowed users at a given time
+    int nValue = 3;     // # of users
+    int sValue = 1;     // # of allowed users at a given time
     int tValue = 1;     // calls a rand time (sec and nano) between 1 and given #
-    int iValue = 0;   // sets interval to launch children between
+    int iValue = 100;     // sets interval to launch children between
     srand(time(0));     // uses a seed for random numbers
+
+    int max_burst_time = 10;
+    int quantum = 5000000;  
 
     /* used for printing every half a second */
     bool flag = false;
     int previousSecond = 0;
 
-    /* initialize shared time */
+    int pidTracker_one = 0;
+    int pidTracker_two = 0;
+
+    sharedMem->seconds = 0;
+    sharedMem->nanoseconds = 0;
+
     SharedTime sharedTime{0, 0};
 
-    /* highest priority (10 ms)
-       medium priority  (20 ms)
-       lowest priority  (40 ms) */
+    queue<Process> processes;
 
-    int q0 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
-    int q1 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
-    int q2 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
+    int q0 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* highest priority (10 ms) */
+    int q1 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* medium priority  (20 ms) */
+    int q2 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* lowest priority  (40 ms) */
+
+    generateProcesses(processes, nValue, max_burst_time, iValue);
 
     while (true)
     {
@@ -161,9 +213,11 @@ int main(int argc, char** argv)
 
         incrementClock(sharedTime);                  // increments shared Time
 
-        for (int i = 0; i <= sValue; ++i)            // 'sValue' used to set max allowed processes at a time
+        for (int i = 0; i < sValue; ++i)            // 'sValue' used to set max allowed processes at a time
         {
+            pidTracker_one++;
             sharedTime.nanoseconds += iValue;        // processes enter system at intervals of 'i' nanoseconds
+
             pid_t childPid = fork();
 
             if (childPid == -1)
@@ -173,28 +227,14 @@ int main(int argc, char** argv)
             }
             else if (childPid == 0)
             {
-                for (int j = 0; j < 5; ++j) {
-                    message msg;
-                    msg.value = i * 5 + j;
-                    if (i == 0)
-                    {
-                        msg.priority = 0;  // high priority
-                        msgsnd(q0, &msg, sizeof(message) - sizeof(long), 0);
-                        std::cout << "Sent message with value1 " << msg.value << " from Process " << getpid() << std::endl;
-                    }
-                    else if (i == 1)
-                    {
-                        msg.priority = 1;  // medium priority
-                        msgsnd(q1, &msg, sizeof(message) - sizeof(long), 0);
-                        std::cout << "Sent message with value2 " << msg.value << " from Process " << getpid() << std::endl;
-                    }
-                    else
-                    {
-                        msg.priority = 2;  // low priority
-                        msgsnd(q2, &msg, sizeof(message) - sizeof(long), 0);
-                        std::cout << "Sent message with value3 " << msg.value << " from Process " << getpid() << std::endl;
-                    }
-                }
+                message msg;
+                msg.value = i;
+                msg.priority = 0;
+                msgsnd(q0, &msg, sizeof(message) - sizeof(long), 0);
+                cout << "OSS: Dispatching process with PID " << pidTracker_one << " (" << getpid() << ") at time "  <<
+                    sharedTime.seconds << ":" << sharedTime.nanoseconds << endl;
+
+                roundRobin(processes, quantum);
 
                 execlp("./worker", "worker", nullptr);
                 exit(1);
@@ -205,7 +245,7 @@ int main(int argc, char** argv)
             }
             else
             {
-                std::cerr << "Error: Worker fork failed\n";
+                cerr << "Error: Worker fork failed\n";
                 return 1;
             }
         }
@@ -222,10 +262,12 @@ int main(int argc, char** argv)
             }
             else if (pid > 0)
             {
+                pidTracker_two++;
                 message msg;
-                msgrcv(msgq, &msg, sizeof(message) - sizeof(long), 1, 0); // Receive only messages of type 1
-                std::cout << "Received message with value " << msg.value << " in Process " << getpid() << std::endl;
-                wait(0);            // provide child time to clear out of the system
+                msgrcv(msgq, &msg, sizeof(message) - sizeof(long), 1, 0);
+
+                cout << "OSS: Receiving message with PID " << pidTracker_two << 
+                    " after running for " << sharedTime.nanoseconds <<  " nanoseconds" << endl;
 
                 ++finishedProcess;
                 nValue--;           // subtract from total user number
