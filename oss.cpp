@@ -1,7 +1,7 @@
 /*
     Project 4
     Author: Thomas Cholak
-    Due Date: 21 March 2024
+    Due Date: 02 April 2024
 */
 
 #include <iomanip>      /* just used for PCB formatting */
@@ -33,7 +33,7 @@ struct PCB {
 
 struct PCB processtable[20];  // PCD is 20 entries long
 
-void generateProcesses(queue<Process>& processes, int num_processes, int max_burst_time, int increment)
+void generateProcesses(queue<Process> queues[], int num_processes, int max_burst_time, int increment)
 {
     srand(time(nullptr)); // seed for random number generation
 
@@ -53,8 +53,8 @@ void generateProcesses(queue<Process>& processes, int num_processes, int max_bur
     {
         processNum++;
 
-        // generates a random burst time (between 1 and max_burst_time)
-        int burst_time = rand() % (max_burst_time*10000) + 1;
+        int burst_time = rand() % (max_burst_time*10000) + 1;  // generates a random burst time (between 1 and max_burst_time)
+        int priority = rand() % 3;                             // randomly decides queue order
         
         // initializes a new process
         Process new_process;
@@ -62,17 +62,68 @@ void generateProcesses(queue<Process>& processes, int num_processes, int max_bur
         new_process.id = processNum;
         new_process.burst_time = burst_time;
         new_process.remaining_time = burst_time;
+        new_process.priority = priority;
 
         sharedMem->nanoseconds+=100;
 
-        cout << "OSS: Generating process with PID " << new_process.id << " and putting it in queue " << "0" << " at time "
+        cout << "OSS: Generating process with PID " << new_process.id << " and putting it in queue " << new_process.priority << " at time "
             << sharedMem->seconds << ":" << sharedMem->nanoseconds << "\n";
 
         // adds the process to the queue
-        processes.push(new_process);
+        queues[priority].push(new_process);
     }
 
     shmdt(sharedMem);
+}
+
+int pidTracker = 0;  // stops the blocked processes and trakcs PIDs for logging
+
+void roundRobinScheduling(queue<Process> queues[], int quantum)
+{
+    int total_time = 0;
+
+    int priorityQuantum[] = {10, 20, 40};
+
+    // Perform round-robin scheduling for each priority queue
+    for (int i = 2; i >= 0; --i)  // Start with the highest priority
+    { 
+        int currentQuantum = priorityQuantum[i];
+
+        while (!queues[i].empty())
+        {
+            Process current_process = queues[i].front();
+            queues[i].pop();
+
+            // five percent chance process is blocked
+            if (rand() % 100 < 15)
+            {
+                if ((pidTracker + 1) < current_process.id)
+                {
+                    cout << "OSS: Putting process with PID " << current_process.id << " into blocked queue" << endl;
+                    current_process.remaining_time = currentQuantum;             // resets its timer to the quantum time
+                    sharedMem->nanoseconds += currentQuantum * 1000000;          // sleep for 1 ms
+
+                    if (i < 2) {
+                        queues[i + 1].push(current_process);    //adds blocked process to high priority queue (if not already in there)
+                    }
+                    else
+                        cout << "Process " << current_process.id << " (priority " << current_process.priority << ") completed." << endl;
+                }
+            }
+
+            // run for either quantum or remaining time depending on what is min
+            int execution_time = min(quantum, current_process.remaining_time);
+
+            // updates process time
+            current_process.remaining_time -= execution_time;
+            total_time += execution_time;
+
+            if (current_process.remaining_time > 0)
+                queues[i].push(current_process);
+        }
+    }
+
+    cout << "OSS: total time of this dispatch was " << total_time << " nanoseconds" << endl;
 }
 
 // used signal-handling code per Hauschild's example
@@ -167,11 +218,11 @@ int main(int argc, char** argv)
     }
 
     /* sets default options if user doesn't set one */
-    int nValue = 3;     // # of users
-    int sValue = 1;     // # of allowed users at a given time
-    int tValue = 1;     // calls a rand time (sec and nano) between 1 and given #
+    int nValue = 5;       // # of users
+    int sValue = 5;       // # of allowed users at a given time
+    int tValue = 1;       // calls a rand time (sec and nano) between 1 and given #
     int iValue = 100;     // sets interval to launch children between
-    srand(time(0));     // uses a seed for random numbers
+    srand(time(0));       // uses a seed for random numbers
 
     int max_burst_time = 10;
     int quantum = 5000000;  
@@ -180,24 +231,26 @@ int main(int argc, char** argv)
     bool flag = false;
     int previousSecond = 0;
 
-    int pidTracker_one = 0;
-    int pidTracker_two = 0;
-
     sharedMem->seconds = 0;
     sharedMem->nanoseconds = 0;
 
     SharedTime sharedTime{0, 0};
 
-    queue<Process> processes;
+    /* highest priority (10 ms), medium priority  (20 ms), lowest priority  (40 ms) */
+    const int NUM_QUEUES = 3;
+    queue<Process> queues[NUM_QUEUES];
 
-    int q0 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* highest priority (10 ms) */
-    int q1 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* medium priority  (20 ms) */
-    int q2 = msgget(IPC_PRIVATE, IPC_CREAT | 0666);  /* lowest priority  (40 ms) */
+    int message_q = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
 
-    generateProcesses(processes, nValue, max_burst_time, iValue);
+    generateProcesses(queues, nValue, max_burst_time, iValue);
 
     while (true)
     {
+
+        if (nValue <= 0) {
+            break;
+        }
+
         /* prints every half second */
         if (sharedTime.seconds >= previousSecond)
         {
@@ -215,7 +268,6 @@ int main(int argc, char** argv)
 
         for (int i = 0; i < sValue; ++i)            // 'sValue' used to set max allowed processes at a time
         {
-            pidTracker_one++;
             sharedTime.nanoseconds += iValue;        // processes enter system at intervals of 'i' nanoseconds
 
             pid_t childPid = fork();
@@ -228,20 +280,20 @@ int main(int argc, char** argv)
             else if (childPid == 0)
             {
                 message msg;
-                msg.value = i;
-                msg.priority = 0;
-                msgsnd(q0, &msg, sizeof(message) - sizeof(long), 0);
-                cout << "OSS: Dispatching process with PID " << pidTracker_one << " (" << getpid() << ") at time "  <<
+                msg.value = pidTracker;
+
+                msgsnd(message_q, &msg, sizeof(message) - sizeof(long), 0);
+                cout << "OSS: Dispatching process with PID " << msg.value + 1 << " (" << getpid() << ") at time "  <<
                     sharedTime.seconds << ":" << sharedTime.nanoseconds << endl;
 
-                roundRobin(processes, quantum);
+                roundRobinScheduling(queues, quantum);
 
                 execlp("./worker", "worker", nullptr);
                 exit(1);
             }
             else if (childPid > 0)
             {
-
+                
             }
             else
             {
@@ -254,6 +306,7 @@ int main(int argc, char** argv)
 
         while (finishedProcess < sValue) {
             int status;
+
             int pid = waitpid(-1, &status, WNOHANG);  // non-blocking wait call
             if (pid == -1)
             {
@@ -262,33 +315,24 @@ int main(int argc, char** argv)
             }
             else if (pid > 0)
             {
-                pidTracker_two++;
+                ++finishedProcess;
+
                 message msg;
                 msgrcv(msgq, &msg, sizeof(message) - sizeof(long), 1, 0);
 
-                cout << "OSS: Receiving message with PID " << pidTracker_two << 
+                cout << "OSS: Receiving message with PID " << msg.value + finishedProcess << 
                     " after running for " << sharedTime.nanoseconds <<  " nanoseconds" << endl;
 
-                ++finishedProcess;
+                pidTracker++;
                 nValue--;           // subtract from total user number
             }
         }
 
-        if (nValue == 0) {
-            break;
-        }
     }
-
 
     // clear all three message queues
-    if (msgctl(q0, IPC_RMID, NULL) == -1) {
-        perror("Failed to clear the low-priority message queue");
-    }
-    if (msgctl(q1, IPC_RMID, NULL) == -1) {
-        perror("Failed to clear the medium-priority message queue");
-    }
-    if (msgctl(q2, IPC_RMID, NULL) == -1) {
-        perror("Failed to clear the low-priority message queue");
+    if (msgctl(message_q, IPC_RMID, NULL) == -1) {
+        perror("failed to clear the message queue");
     }
 
     // cleans shared memory

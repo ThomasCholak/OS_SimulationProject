@@ -6,7 +6,7 @@ int main(int argc, char** argv) {
 
     /* if parameters are set incorrectly by user, it sets defaults instead*/
     if (argc < 5) {
-        randSec = 5;       // default seconds
+        randSec = 5;        // default seconds
         randNano = 500000;  // default nanoseconds
     } else {
         randSec = std::atoi(argv[1]);  // seconds

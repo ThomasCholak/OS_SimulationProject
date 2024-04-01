@@ -31,7 +31,6 @@ const int msq_key = ftok("oss.h", 0);
 
 // structure for messages which are sent
 struct message {
-    long priority;   // can be q0, q1, or q2
     int value;      // actual message
 };
 
@@ -39,6 +38,7 @@ struct Process {
     int id;              // process time
     int burst_time;      // burst time
     int remaining_time;  // remaining time to execute
+    int priority;        // queue priority
 };
 
 // creates shared time structure for 'oss.cpp' and 'worker.cpp' 
@@ -55,36 +55,6 @@ void incrementClock(SharedTime& clock) {
         clock.seconds += 1;
         clock.nanoseconds %= 1000000000;
     }
-}
-
-void roundRobin(queue<Process>& processes, int quantum)
-{
-    int total_time = 0;
-
-    while (!processes.empty())
-    {
-        Process current_process = processes.front();
-        processes.pop();
-
-        // execute for either quantum or remaing time depending on what's smaller
-        int execution_time = min(quantum, current_process.remaining_time);
-
-        // calculate the remaining process time
-        current_process.remaining_time -= execution_time;
-
-        // updates the current time (total_time)
-        total_time += execution_time;
-
-        //std::cout << "Executing process " << current_process.id << " for " << execution_time << " nanoseconds" << std::endl;
-
-        // pushes back to queue if process is not yet finished
-        if (current_process.remaining_time > 0)
-            processes.push(current_process);
-        //else
-            //std::cout << "Process " << current_process.id << " completed." << std::endl;
-    }
-
-    cout << "OSS: total time of this dispatch was " << total_time << " nanoseconds" << endl;
 }
 
 #endif // OSS_H
