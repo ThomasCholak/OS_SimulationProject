@@ -14,8 +14,9 @@
 #include <iostream>
 #include <string.h>
 #include <errno.h>
-#include <queue>
+#include <queue>       // used for the round-robin queue
 #include <sys/msg.h>
+#include <fstream>     // used for checking line number for logfile
 #include <sys/ipc.h>   // ftok key generation
 
 using namespace std;
@@ -31,14 +32,14 @@ const int msq_key = ftok("oss.h", 0);
 
 // structure for messages which are sent
 struct message {
-    int value;      // actual message
+    int value;      // placeholder value for messages
 };
 
 struct Process {
     int id;              // process time
     int burst_time;      // burst time
-    int remaining_time;  // remaining time to execute
-    int priority;        // queue priority
+    int remaining_time;  // remaining execution time
+    int priority;        // queue priority (q0, q1, q2)
 };
 
 // creates shared time structure for 'oss.cpp' and 'worker.cpp' 
@@ -55,6 +56,32 @@ void incrementClock(SharedTime& clock) {
         clock.seconds += 1;
         clock.nanoseconds %= 1000000000;
     }
+}
+
+// boolean function to check if logfile has exceeded 10000 lines
+bool fileLimit(const std::string& filename)
+{
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        std::cerr << "error: could not open log file" << std::endl;
+        return false;
+    }
+
+    int lineCount = 0;
+    std::string line;
+    while (std::getline(file, line))
+    {
+        ++lineCount;
+        if (lineCount > 10000)  // checks current line count
+        {
+            file.close();
+            return true;
+        }
+    }
+
+    file.close();
+    return false;
 }
 
 #endif // OSS_H

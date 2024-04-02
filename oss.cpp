@@ -19,13 +19,11 @@ int msgq;
 int shmid;
 SharedTime* sharedMem;
 
-int processNum = 0;
-
 struct PCB {
-    int occupied;         // either "0" or "1"
-    pid_t pid;            // process id of this child
-    int startSeconds;     // time when it was forked (sec)
-    int startNano;        // time when it was forked (nano)
+    int occupied;               // either "0" or "1"
+    pid_t pid;                  // process id of this child
+    int startSeconds;           // time when it was forked (sec)
+    int startNano;              // time when it was forked (nano)
     int blocked;                // whether process is blocked
     int eventBlockedUntilSec;   // when will this process become unblocked (sec)
     int eventBlockedUntilNano;  // when will this process become unlbocked (nano)
@@ -78,9 +76,14 @@ void generateProcesses(queue<Process> queues[], int num_processes, int max_burst
 
 int pidTracker = 0;  // stops the blocked processes and trakcs PIDs for logging
 
+double averageWait = 0.0;
+double averageCPU = 0.0;
+double blockedTime = 100.0;
+
 void roundRobinScheduling(queue<Process> queues[], int quantum)
 {
     int total_time = 0;
+    int numProcesses = 0;
 
     int priorityQuantum[] = {10, 20, 40};
 
@@ -94,9 +97,14 @@ void roundRobinScheduling(queue<Process> queues[], int quantum)
             Process current_process = queues[i].front();
             queues[i].pop();
 
+            double waitTime = priorityQuantum[i]; // tracks average wait time
+            averageWait += waitTime;
+
             // five percent chance process is blocked
             if (rand() % 100 < 15)
             {
+                blockedTime += 1000;
+
                 if ((pidTracker + 1) < current_process.id)
                 {
                     cout << "OSS: Putting process with PID " << current_process.id << " into blocked queue" << endl;
@@ -121,9 +129,15 @@ void roundRobinScheduling(queue<Process> queues[], int quantum)
             if (current_process.remaining_time > 0)
                 queues[i].push(current_process);
         }
+
+        averageWait = averageWait;
+        averageCPU = (averageWait / total_time) * 10000;
     }
 
     cout << "OSS: total time of this dispatch was " << total_time << " nanoseconds" << endl;
+
+    cout << "OSS: average wait time: " << averageWait << " nanoseconds : average CPU utilization " 
+        << averageCPU << "% : average process block time " << blockedTime << " nanoseconds" << endl;
 }
 
 // used signal-handling code per Hauschild's example
@@ -183,6 +197,8 @@ void displayProcessTable(int seconds, int nanoseconds)
     std::cout << "-----------------------------------------\n";
 }
 
+// tracks the number of
+int processNum = 0;
 
 int main(int argc, char** argv)
 {
@@ -224,6 +240,50 @@ int main(int argc, char** argv)
     int iValue = 100;     // sets interval to launch children between
     srand(time(0));       // uses a seed for random numbers
 
+    const char* outputFile = "logfile"; // default logfile name
+
+    while ((opt = getopt(argc, argv, "hn:s:t:i:f:")) != -1)
+    {
+        switch (opt)
+        {
+            case 'n':
+                nValue = std::atoi(optarg);  // converts 'optarg' (user's argument) into an int
+                break;
+            case 's':
+                sValue = std::atoi(optarg);
+                break;
+            case 't':
+                tValue = std::atoi(optarg);
+                break;
+            case 'i':
+                iValue = std::atoi(optarg);
+                break;
+            case 'f':
+                outputFile = static_cast<const char*>(optarg);  // rename the output file
+                break;
+            case 'h':
+                std::cout << "The following options are available to use:" << std::endl;
+                std::cout << "-h : displays a help menu" << std::endl;
+                std::cout << "-n : used for the number of workers" << std::endl;
+                std::cout << "-s : sets a limit to the number of allowed workers at a given time" << std::endl;
+                std::cout << "-t : sets a the higher number of a range which a random number is called to execute a child process" << std::endl;
+                std::cout << "-i : sets interval (in nanos) to launch children between" << std::endl;
+                std::cout << "-f : allows you to manually set the name of the file" << std::endl;
+                exit(EXIT_FAILURE);  // exits the program after displaying menu
+            case '?':
+                /* error validation for unwanted arguments */
+                if (optopt == 'n' || optopt == 's' || optopt == 't' || optopt == 'i'  || optopt == 'f')
+                    std::cerr << "Option: " << static_cast<char>(optopt) << " requires an argument." << std::endl;  // catches missing user args
+                else if (isprint(optopt))
+                    std::cerr << "Unknown option: " << static_cast<char>(optopt) << std::endl;
+                else
+                    std::cerr << "Unknown option: " << optopt << std::endl;  // prints error code
+                return 1;
+            default:
+                return 1;
+        }
+    }
+
     int max_burst_time = 10;
     int quantum = 5000000;  
 
@@ -242,7 +302,27 @@ int main(int argc, char** argv)
 
     int message_q = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
 
+    FILE* logfile = fopen(outputFile, "w");
+
+    if (logfile == NULL) {
+        perror("Error opening logfile");
+        exit(EXIT_FAILURE);
+    }
+
+    // Redirect stdout to the custom logfile
+    if (freopen(outputFile, "a", stdout) == NULL) {
+        perror("freopen");
+        exit(EXIT_FAILURE);
+    }
+
     generateProcesses(queues, nValue, max_burst_time, iValue);
+
+    fclose(logfile);  // closes the log file
+
+    if (freopen("/dev/stdout", "a", stdout) == NULL) {
+        perror("freopen");
+        exit(EXIT_FAILURE);
+    }
 
     while (true)
     {
@@ -254,13 +334,13 @@ int main(int argc, char** argv)
         /* prints every half second */
         if (sharedTime.seconds >= previousSecond)
         {
-            std::cout << "Time: " << sharedTime.seconds << " seconds, " << sharedTime.nanoseconds << " nanoseconds" << std::endl;
+            displayProcessTable(sharedTime.seconds, sharedTime.nanoseconds);
             previousSecond++;  // updates the seconds
             flag = true;
         }
         else if(sharedTime.nanoseconds >= 500000000  && flag)
         {
-            std::cout << "Time: " << sharedTime.seconds << " seconds, " << sharedTime.nanoseconds << " nanoseconds" << std::endl;
+            displayProcessTable(sharedTime.seconds, sharedTime.nanoseconds);
             flag = false;
         }
 
@@ -268,6 +348,19 @@ int main(int argc, char** argv)
 
         for (int i = 0; i < sValue; ++i)            // 'sValue' used to set max allowed processes at a time
         {
+
+            FILE* logfile = fopen(outputFile, "a");
+            if (logfile == NULL) {
+                perror("Error opening logfile");
+                exit(EXIT_FAILURE);
+            }
+
+            // Redirect stdout to the custom logfile
+            if (freopen(outputFile, "a", stdout) == NULL) {
+                perror("freopen");
+                exit(EXIT_FAILURE);
+            }
+
             sharedTime.nanoseconds += iValue;        // processes enter system at intervals of 'i' nanoseconds
 
             pid_t childPid = fork();
@@ -280,7 +373,7 @@ int main(int argc, char** argv)
             else if (childPid == 0)
             {
                 message msg;
-                msg.value = pidTracker;
+                msg.value = i;
 
                 msgsnd(message_q, &msg, sizeof(message) - sizeof(long), 0);
                 cout << "OSS: Dispatching process with PID " << msg.value + 1 << " (" << getpid() << ") at time "  <<
@@ -293,13 +386,41 @@ int main(int argc, char** argv)
             }
             else if (childPid > 0)
             {
-                
+                int emptyIndex = -1;
+                for (int j = 0; j < sValue; ++j) // sets max allowed values in process table
+                {
+                    if (processtable[j].occupied == 0)
+                    {
+                        emptyIndex = j;  // allocated empty indexes
+                        break;
+                    }
+                }
+                if (emptyIndex != -1)
+                {
+                    processtable[emptyIndex].occupied = 1;
+                    processtable[emptyIndex].pid = childPid;
+                    processtable[emptyIndex].startSeconds = sharedMem->seconds;
+                    processtable[emptyIndex].startNano = sharedMem->nanoseconds;
+                }
+                else
+                {
+                    std::cerr << "Error: Process table is full\n";
+                    return 1;
+                }
             }
             else
             {
                 cerr << "Error: Worker fork failed\n";
                 return 1;
             }
+
+            fclose(logfile);  // closes the log file
+
+            if (freopen("/dev/stdout", "a", stdout) == NULL) {
+                perror("freopen");
+                exit(EXIT_FAILURE);
+            }
+
         }
         
         int finishedProcess = 0;
@@ -315,6 +436,15 @@ int main(int argc, char** argv)
             }
             else if (pid > 0)
             {
+                for (int j = 0; j < sValue; ++j)
+                {
+                    if (processtable[j].pid == pid)
+                    {
+                        processtable[j].occupied = 0;
+                        break;
+                    }
+                }
+
                 ++finishedProcess;
 
                 message msg;
@@ -325,9 +455,17 @@ int main(int argc, char** argv)
 
                 pidTracker++;
                 nValue--;           // subtract from total user number
+
+                displayProcessTable(sharedTime.seconds, sharedTime.nanoseconds);
             }
         }
 
+    }
+
+    // stops outputting to logfile if the file exceeds 10000 lines
+    if (fileLimit(outputFile)) {
+        std::cerr << "Error: Line count exceeds threshold. Logging stopped." << std::endl;
+        return 1;
     }
 
     // clear all three message queues
