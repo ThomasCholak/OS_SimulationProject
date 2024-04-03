@@ -85,10 +85,10 @@ void roundRobinScheduling(queue<Process> queues[], int quantum)
     int total_time = 0;
     int numProcesses = 0;
 
-    int priorityQuantum[] = {10, 20, 40};
+    int priorityQuantum[] = {10, 20, 40}; // three different priority queues
 
-    // Perform round-robin scheduling for each priority queue
-    for (int i = 2; i >= 0; --i)  // Start with the highest priority
+    // perform round-robin scheduling for each priority queue
+    for (int i = 2; i >= 0; --i)  // begins with the highest priority
     { 
         int currentQuantum = priorityQuantum[i];
 
@@ -179,7 +179,7 @@ static int setupitimer(void) {
 /* used to display the process table (initialized with only 0's) */
 void displayProcessTable(int seconds, int nanoseconds)
 {
-    std::cout << "\nOSS PID: " << getpid() << " SysClockS: " << seconds
+    std::cout << "OSS PID: " << getpid() << " SysClockS: " << seconds
         << " SysClockNano: " << nanoseconds << "\n";
     std::cout << "Process Table:\n";
     std::cout << "-----------------------------------------\n";
@@ -236,7 +236,7 @@ int main(int argc, char** argv)
     /* sets default options if user doesn't set one */
     int nValue = 5;       // # of users
     int sValue = 5;       // # of allowed users at a given time
-    int tValue = 1;       // calls a rand time (sec and nano) between 1 and given #
+    int tValue = 2;       // calls a rand time (sec and nano) between 1 and given #
     int iValue = 100;     // sets interval to launch children between
     srand(time(0));       // uses a seed for random numbers
 
@@ -301,6 +301,8 @@ int main(int argc, char** argv)
     queue<Process> queues[NUM_QUEUES];
 
     int message_q = msgget(IPC_PRIVATE, IPC_CREAT | 0666);
+
+    cout << "'" << outputFile << "' has been generated."  << endl;
 
     FILE* logfile = fopen(outputFile, "w");
 

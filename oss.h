@@ -73,7 +73,7 @@ bool fileLimit(const std::string& filename)
     while (std::getline(file, line))
     {
         ++lineCount;
-        if (lineCount > 10000)  // checks current line count
+        if (lineCount > 10000)  // checks if current line count exceeds ten-thousand
         {
             file.close();
             return true;
