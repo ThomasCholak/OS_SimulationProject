@@ -1,9 +1,3 @@
-/*
-    Project 4
-    Author: Thomas Cholak
-    Due Date: 02 April 2024
-*/
-
 #include <iomanip>      /* just used for PCB formatting */
 #include <fcntl.h>      /* needed to import: O_CREAT */
 #include <cstdlib>      /* needed to generate random numbers */
