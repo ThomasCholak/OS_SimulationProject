@@ -1,4 +1,4 @@
-[b]How to Run[/b]:
+<b>How to Run</b>:
 
 To run the program, download all the files into the Linux operating system of your choice and port the files into their own directory. In this example, WSL Ubuntu is utlized to run the program.
 
